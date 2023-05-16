@@ -1,11 +1,3 @@
-'''
-
-{
-    "camera_name": "allen" | "vanhorn" | "king"
-}
-
-'''
-
 import json
 import urllib3
 import boto3
@@ -20,29 +12,34 @@ def lambda_handler(event, context):
             "message": "Failed to communicate,try again later",
             "body":{
                 "prediction": -99,
-                "confidence": 1
             }
         })
     
     return parse_prediction(file_name, prediction)
 
 def parse_prediction(file_name: str, pred: dict) -> dict:
-    if(not pred['Labels']):
-        upload_to_storage(file_name,0)
-        return json.dumps({
-            "statusCode": 200,
-            "message": "There is not a train over the tracks",
-            "body":{
-                "prediction": 0
-            }
-        })
-    else:
-        upload_to_storage(file_name,1)
+    labels = []
+    average_confidence = 0
+    for label in pred['Labels']:
+        labels.append((label['Name'].replace(" ",""), label['Confidence']))
+        average_confidence+=label['Confidence']
+    average_confidence/=len(labels)
+    if(average_confidence >= 50):
+        upload_to_storage(file_name, labels, 1)
         return json.dumps({
             "statusCode": 200,
             "message": "There is a train over the tracks",
             "body":{
                 "prediction": 1
+            }
+        })
+    else:
+        upload_to_storage(file_name, labels, 0)
+        return json.dumps({
+            "statusCode": 200,
+            "message": "There is not a train over the tracks",
+            "body":{
+                "prediction": 0
             }
         })
 
@@ -67,11 +64,11 @@ def rek(image_name: str) -> dict:
             },
         },
         MaxLabels=10,
-        MinConfidence=50,
+        MinConfidence=0,
         Settings={
             "GeneralLabels": {
                 "LabelInclusionFilters": 
-                    [ "Train", "Shipping Container", "Freight Car", "Railway" ]
+                    [ "Train", "Shipping Container", "Freight Car" ]
                 }
             }
         )
@@ -94,13 +91,18 @@ def upload_to_s3(camera_name: str) -> str:
         return ""
     return uid+'.jpg'
 
-def upload_to_storage(s3_object_name: str, pred: int):
+def upload_to_storage(s3_object_name: str, labels: list, prediction: int):
+        path = f'/tmp/{s3_object_name}'
+        file_name = f'{s3_object_name.split(".")[0]}_'
+        for label in labels:
+            file_name+=f'{label[0]}-{label[1]}_'
+        file_name+=f'{prediction}.jpg'
         path = f'/tmp/{s3_object_name}'
         glacier = boto3.resource('glacier')
         s3 = boto3.resource('s3')
         s3.Bucket('train-over-tracks-inference-storage-open').download_file(s3_object_name, path)
         with open(path, 'rb') as f:
-            s3.Bucket("train-over-tracks-inference-storage-open-archive").put_object(Key=f'{s3_object_name.split(".")[0]}_{pred}.jpg', Body=f)
+            s3.Bucket("train-over-tracks-inference-storage-open-archive").put_object(Key=file_name, Body=f)
         s3.Bucket('train-over-tracks-inference-storage-open').delete_objects(
             Delete={
                     'Objects': [
